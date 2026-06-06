@@ -1,95 +1,79 @@
 # pi-freerouter
 
-A [Pi coding agent](https://pi.dev) extension that automatically routes requests through OpenRouter's free model tier.
+Pi coding agent extension that routes every request through OpenRouter's free model tier — no paid API key needed beyond your OpenRouter account.
 
-## What it does
+## Quick start
 
-- Registers a single **FreeRouter** model in Pi's UI — no need to manually pick individual models
-- Auto-discovers all free models from OpenRouter (models with `:free` suffix)
-- Races **3 models simultaneously** and streams from whichever responds first
-- Transparently rotates to the next batch on quota exhaustion (429) or slow responses
-- Sets FreeRouter as Pi's default model on every session start
-- Exhausted models automatically recover after 90 seconds (matching OpenRouter's per-minute quota reset)
-
-## Setup
-
-### 1. Install
+**1. Install**
 
 ```bash
-npm install pi-freerouter
+npm install -g pi-freerouter
+pi install pi-freerouter
 ```
 
-### 2. Set your OpenRouter API key
+**2. Set your OpenRouter API key**
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
-Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys).
+Free key at [openrouter.ai/keys](https://openrouter.ai/keys). No credit card required.
 
-### 3. Register in Pi
+**3. Start Pi**
 
-In your Pi config, add `pi-freerouter` to your extensions list. FreeRouter will appear as a model in Pi's model picker and is set as the default automatically.
+FreeRouter appears in the model picker and is set as the default automatically.
 
-## How it works
+---
+
+## How free model routing works
+
+OpenRouter exposes dozens of free models (models with a `:free` suffix). Each has its own rate limit — typically a few requests per minute per model. The trick is to spread load across all of them automatically.
+
+### Parallel racing
+
+Every time Pi sends a request, pi-freerouter doesn't pick one model and hope for the best. It picks the **next 3 available models** from its sorted list and fires all three requests simultaneously.
 
 ```
-Pi session start
+Request arrives
     │
-    └── pi-freerouter activates
-            ├── Fetches all :free models from OpenRouter
-            ├── Sorts by speed (Groq → Cerebras → Fireworks → others)
-            └── Registers "FreeRouter" as a single virtual model
-
-Per request (streamSimple)
-    │
-    ├── Pick next 3 available models from the sorted list
-    ├── Start all 3 simultaneously
-    ├── First to emit a response token wins → stream it to Pi
-    ├── Abort the other 2
-    └── On 429 / 5xx / timeout (5s) → mark exhausted, try next batch
-            └── Exhausted models recover after 90s TTL
+    ├── model A ──────────────────── first token ──▶ WINNER → stream to Pi
+    ├── model B ───── (slower)                      → aborted
+    └── model C ─── (even slower)                   → aborted
 ```
 
-## Model priority
+Whichever model emits its first token wins. The other two are immediately cancelled. Pi sees a single clean stream — it has no idea a race happened.
 
-Free models are sorted so the fastest providers are always tried first:
+### Automatic fallback
+
+When a model hits its rate limit (HTTP 429) or fails (5xx), it's marked as exhausted and skipped for 90 seconds. The next batch of 3 models takes over. Timed-out models (no response in 30 seconds) recover faster — after 15 seconds.
+
+```
+Batch 1: [model A, model B, model C]  → all hit quota
+Batch 2: [model D, model E, model F]  → model D wins
+         ↑ model A–C recover after 90s and rejoin the pool
+```
+
+### Provider priority
+
+Free models are sorted so the lowest-latency inference providers are always tried first:
 
 1. Groq
-2. Cerebras
+2. Cerebras  
 3. Fireworks
 4. Together
 5. Mistral
-6. Everything else (sorted by context size ascending)
+6. Everything else (sorted by context window ascending)
 
-## Configuration
+### Model list refresh
 
-Only one environment variable is required:
+The list of available free models is fetched at startup and refreshed every hour in the background, so long-running Pi sessions automatically pick up newly added models.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENROUTER_API_KEY` | ✅ | Your OpenRouter API key |
+---
 
-No other configuration. Rotation, timeout, and TTL are tuned automatically.
+## Requirements
 
-## Error handling
-
-| Situation | Behavior |
-|-----------|----------|
-| 429 Too Many Requests | Mark model exhausted (90s) → try next batch |
-| 5xx Server Error | Mark model exhausted (90s) → try next batch |
-| No response within 5s | Abort slow batch → try next batch |
-| All models exhausted | Return error: "All free models exhausted. Try again in a moment." |
-| Request cancelled | Return abort error immediately |
-| `OPENROUTER_API_KEY` not set | Throw at startup |
-
-## Development
-
-```bash
-npm install
-npm test        # run tests (tsc + node --test)
-npm run build   # compile to dist/
-```
+- [Pi coding agent](https://pi.dev) v0.78+
+- OpenRouter API key (free tier is sufficient)
 
 ## License
 
