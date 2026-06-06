@@ -11,8 +11,12 @@ import { fetchFreeModels } from "./discovery.js";
 import { FreeRouter } from "./router.js";
 import { streamFreeModel, ModelExhaustedError } from "./stream.js";
 
-// Try this many models simultaneously; first to start streaming wins
-const RACE_WIDTH = 2;
+// Race this many free models simultaneously; first to stream wins.
+const RACE_WIDTH = 3;
+
+// If no candidate emits its first token within this window, abort and try the
+// next batch. Keeps perceived latency bounded even on universally-slow batches.
+const FIRST_TOKEN_TIMEOUT_MS = 5_000;
 
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const controller = new AbortController();
@@ -25,11 +29,12 @@ function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
 }
 
 /**
- * Race candidateIds against each other: start all simultaneously, forward events
- * from the first model that emits text_start, abort the rest.
+ * Start candidateIds concurrently and forward events from the first model that
+ * emits `text_start` (or a valid empty `done`) to outStream; abort the rest.
  *
- * Returns exhaustedIds (models that returned 429/5xx) regardless of whether a
- * winner was found, so the caller can mark them in the router.
+ * Key correctness invariant: pending uses a Map<candidateIdx, Promise> so that
+ * removal is always by candidate index, never by array position (which diverges
+ * after the first re-push).
  */
 async function raceModels(
   candidateIds: string[],
@@ -42,7 +47,7 @@ async function raceModels(
   const proxyStreams = candidateIds.map(() => createAssistantMessageEventStream());
   const exhaustedIds: string[] = [];
 
-  // Start all candidates concurrently; each writes to its own proxy stream
+  // Start all candidates concurrently; each writes to its own isolated proxy stream.
   candidateIds.forEach((modelId, i) => {
     const sig = parentSignal
       ? mergeSignals(parentSignal, controllers[i].signal)
@@ -53,50 +58,93 @@ async function raceModels(
     });
   });
 
-  // Multiplex async iterators — resolve winner on first text_start
   const iterators = proxyStreams.map((s) => s[Symbol.asyncIterator]());
   const buffers: AssistantMessageEvent[][] = candidateIds.map(() => []);
 
   type RaceItem = { idx: number; result: IteratorResult<AssistantMessageEvent> };
+  type TimeoutSentinel = { __timeout: true };
+
   const nextFrom = (idx: number): Promise<RaceItem> =>
     iterators[idx].next().then((result) => ({ idx, result }));
 
-  let pending: Promise<RaceItem>[] = candidateIds.map((_, i) => nextFrom(i));
+  // Map<candidateIdx, Promise> so delete(idx) is always correct regardless of
+  // insertion order — the old array-based filter((_,j)=>j!==idx) was wrong after
+  // any re-push because j (array position) diverges from idx (candidate index).
+  const pending = new Map<number, Promise<RaceItem>>(
+    candidateIds.map((_, i): [number, Promise<RaceItem>] => [i, nextFrom(i)]),
+  );
 
-  while (pending.length > 0) {
-    const { idx, result } = await Promise.race(pending);
-    pending = pending.filter((_, j) => j !== idx);
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<TimeoutSentinel>((resolve) => {
+    timeoutHandle = setTimeout(
+      () => resolve({ __timeout: true }),
+      FIRST_TOKEN_TIMEOUT_MS,
+    );
+  });
 
-    if (result.done) continue; // this candidate finished without winning
+  try {
+    while (pending.size > 0) {
+      const resolved = await Promise.race<RaceItem | TimeoutSentinel>([
+        ...pending.values(),
+        deadline,
+      ]);
 
-    const event = result.value;
-    buffers[idx].push(event);
-
-    if (event.type === "text_start") {
-      // Abort all losing candidates
-      controllers.forEach((c, j) => { if (j !== idx) c.abort(); });
-
-      // Forward buffered events (everything up to and including text_start)
-      for (const e of buffers[idx]) outStream.push(e);
-
-      // Forward remaining events from the winner's stream
-      for await (const e of { [Symbol.asyncIterator]: () => iterators[idx] }) {
-        outStream.push(e);
-        if (e.type === "done" || e.type === "error") {
-          outStream.end();
-          break;
-        }
+      if ("__timeout" in resolved) {
+        // Batch is too slow — abort all, caller will try the next batch.
+        controllers.forEach((c) => c.abort());
+        return { winner: null, exhaustedIds };
       }
-      outStream.end(); // defensive: no-op if already ended via done/error above
 
-      return { winner: candidateIds[idx], exhaustedIds };
+      const { idx, result } = resolved;
+      pending.delete(idx); // safe: keyed by candidate idx, not array position
+
+      if (result.done) continue; // this candidate's stream ended; move on
+
+      const event = result.value;
+      buffers[idx].push(event);
+
+      // text_start  → normal streaming win
+      // done        → valid but empty response (no text content); still a winner
+      if (event.type === "text_start" || event.type === "done") {
+        // Abort all losing candidates immediately.
+        controllers.forEach((c, j) => { if (j !== idx) c.abort(); });
+
+        // Forward all buffered events (including the winning event itself).
+        for (const e of buffers[idx]) outStream.push(e);
+
+        if (event.type === "done") {
+          // Empty response is complete — close and return.
+          outStream.end();
+          return { winner: candidateIds[idx], exhaustedIds };
+        }
+
+        // text_start: pipe the remaining events from the winner to outStream.
+        for await (const e of { [Symbol.asyncIterator]: () => iterators[idx] }) {
+          outStream.push(e);
+          if (e.type === "done" || e.type === "error") {
+            outStream.end();
+            break;
+          }
+        }
+        outStream.end(); // defensive: no-op if already ended via done/error above
+
+        return { winner: candidateIds[idx], exhaustedIds };
+      }
+
+      if (event.type === "error") {
+        // This candidate had a non-quota failure; its stream will end next tick.
+        // Don't re-add to pending — let it drain via result.done on the next race.
+        continue;
+      }
+
+      // Any other event (e.g., thinking_start before text_start): keep consuming.
+      pending.set(idx, nextFrom(idx));
     }
 
-    // Not text_start yet — keep consuming from this candidate
-    pending.push(nextFrom(idx));
+    return { winner: null, exhaustedIds };
+  } finally {
+    clearTimeout(timeoutHandle);
   }
-
-  return { winner: null, exhaustedIds };
 }
 
 const BASE_ERROR_OUTPUT = {
@@ -153,6 +201,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
       (async () => {
         while (true) {
+          // Check abort before starting each batch.
+          if (options?.signal?.aborted) {
+            const abortMsg = "Request was cancelled.";
+            streamClosed = true;
+            stream.push({
+              type: "error",
+              reason: "aborted",
+              error: {
+                ...BASE_ERROR_OUTPUT,
+                content: [],
+                errorMessage: abortMsg,
+                timestamp: Date.now(),
+              },
+            });
+            stream.end();
+            return;
+          }
+
           const candidates = router.nextModels(RACE_WIDTH);
           if (candidates.length === 0) break;
 
@@ -164,18 +230,38 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
           if (winner !== null) {
             streamClosed = true;
-            return; // raceModels already wrote done/error and called stream.end()
+            return; // raceModels wrote all events and called stream.end()
           }
 
-          // No winner: mark any non-exhausted candidates so we don't retry them
-          // immediately (could be network error, not quota — rotate to fresh ones)
+          // Check abort again — the race may have ended because all candidates
+          // were aborted by the parent signal (not because of quota exhaustion).
+          if (options?.signal?.aborted) {
+            const abortMsg = "Request was cancelled.";
+            streamClosed = true;
+            stream.push({
+              type: "error",
+              reason: "aborted",
+              error: {
+                ...BASE_ERROR_OUTPUT,
+                content: [],
+                errorMessage: abortMsg,
+                timestamp: Date.now(),
+              },
+            });
+            stream.end();
+            return;
+          }
+
+          // No winner: mark non-exhausted candidates too, so we don't retry the
+          // same slow/error-prone batch immediately (they recover after TTL).
           candidates.forEach((id) => {
             if (!exhaustedIds.includes(id)) router.markExhausted(id);
           });
         }
 
-        // All models currently exhausted — they auto-recover after TTL
-        const errMsg = "All free models exhausted. They will recover automatically — please try again in a moment.";
+        // All models currently in TTL cooldown.
+        const errMsg =
+          "All free models exhausted. They will recover automatically — please try again in a moment.";
         streamClosed = true;
         stream.push({
           type: "error",
@@ -211,7 +297,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }) as NonNullable<import("@earendil-works/pi-coding-agent").ProviderConfig["streamSimple"]>,
   });
 
-  // Auto-activate FreeRouter as the default model on session start
+  // Auto-activate FreeRouter as the default model on session start.
   pi.on("session_start", async (_event: unknown, handlerCtx?: unknown) => {
     try {
       const registry = (handlerCtx as ExtensionContext)?.modelRegistry;
