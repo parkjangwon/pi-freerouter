@@ -52,12 +52,7 @@ export async function streamFreeModel(
     ...context.messages,
   ];
 
-  // Fix 2: Convert Pi tool schema to OpenAI tool format
-  const openAiTools = context.tools?.map((t) => ({
-    type: "function" as const,
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
-
+  // Tool use not supported in v1 — tool calls would be received but not forwarded
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -69,7 +64,6 @@ export async function streamFreeModel(
       model: modelId,
       stream: true,
       messages,
-      ...(openAiTools?.length ? { tools: openAiTools } : {}),
     }),
     signal,
   });
@@ -188,7 +182,8 @@ export async function streamFreeModel(
     outStream.end();
   } catch (err) {
     // Fix 3: Ensure stream is closed on mid-stream errors
-    outStream.push({ type: "error", reason: "error", error: output });
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    outStream.push({ type: "error", reason: isAbort ? "aborted" : "error", error: output });
     outStream.end();
     throw err;
   }

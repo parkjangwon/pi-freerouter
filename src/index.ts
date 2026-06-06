@@ -1,4 +1,4 @@
-import type { ExtensionAPI, SessionStartEvent, ExtensionContext } from "./types.js";
+import type { ExtensionAPI, ExtensionContext } from "./types.js";
 import { createAssistantMessageEventStream } from "./types.js";
 import { fetchFreeModels } from "./discovery.js";
 import { FreeRouter } from "./router.js";
@@ -22,7 +22,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.registerProvider("freerouter", {
     baseUrl: "https://openrouter.ai/api/v1",
-    apiKey: "$OPENROUTER_API_KEY",
+    apiKey,
     api: "openai-completions",
     models: [
       {
@@ -114,10 +114,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
 
   // Auto-activate FreeRouter as the default model on session start
-  pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-    const freeRouterModel = ctx.modelRegistry.find("freerouter", "free-router");
-    if (freeRouterModel) {
-      await pi.setModel(freeRouterModel);
+  pi.on("session_start", async (_event: unknown, handlerCtx?: unknown) => {
+    try {
+      const registry = (handlerCtx as ExtensionContext)?.modelRegistry;
+      const freeRouterModel = registry?.find?.("freerouter", "free-router");
+      if (freeRouterModel) {
+        await pi.setModel(freeRouterModel);
+      }
+    } catch (err) {
+      console.warn("[pi-freerouter] Failed to set FreeRouter as active model:", err);
     }
   });
 }
