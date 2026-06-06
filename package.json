@@ -1,6 +1,6 @@
 {
   "name": "pi-freerouter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi coding agent extension — auto-routes to free OpenRouter models",
   "type": "module",
   "main": "dist/index.js",
