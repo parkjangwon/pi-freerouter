@@ -124,7 +124,7 @@ export async function streamFreeModel(
           if (textStarted) {
             emitTextEnd(outStream, output, TEXT_INDEX);
           }
-          outStream.push({ type: "done", reason: normalizeStopReason(output.stopReason), message: snapshot(output) });
+          outStream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: snapshot(output) });
           outStream.end();
           return;
         }
@@ -182,7 +182,7 @@ export async function streamFreeModel(
     if (textStarted) {
       emitTextEnd(outStream, output, TEXT_INDEX);
     }
-    outStream.push({ type: "done", reason: normalizeStopReason(output.stopReason), message: snapshot(output) });
+    outStream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: snapshot(output) });
     outStream.end();
   } catch (err) {
     // Fix 3: Ensure stream is closed on mid-stream errors
