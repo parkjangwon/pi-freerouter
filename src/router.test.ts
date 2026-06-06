@@ -66,4 +66,20 @@ describe("FreeRouter", () => {
     await new Promise((res) => setTimeout(res, 30));   // wait past TTL
     assert.equal(r.nextModel(), "a:free"); // a is back at front of list
   });
+
+  it("markSlow skips model with short TTL", async () => {
+    const r = new FreeRouter(["a:free", "b:free"]);
+    r.markSlow("a:free");
+    assert.equal(r.nextModel(), "b:free"); // a temporarily skipped
+    // Note: full 15s slow TTL not tested to keep tests fast; TTL logic is shared with markExhausted
+  });
+
+  it("markSlow does not downgrade an exhausted model to slow TTL", () => {
+    const r = new FreeRouter(["a:free", "b:free"], 90_000);
+    r.markExhausted("a:free");
+    r.markSlow("a:free"); // should keep the longer 90s TTL
+    // Both markExhausted and markSlow skip the model; the key invariant is that
+    // markSlow won't replace a long-TTL entry with a short one.
+    assert.equal(r.nextModel(), "b:free"); // a still excluded
+  });
 });

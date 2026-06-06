@@ -15,8 +15,9 @@ import { streamFreeModel, ModelExhaustedError, ModelFatalError } from "./stream.
 const RACE_WIDTH = 3;
 
 // If no candidate emits its first token within this window, abort and try the
-// next batch. Keeps perceived latency bounded even on universally-slow batches.
-const FIRST_TOKEN_TIMEOUT_MS = 5_000;
+// next batch. Free models routinely take 10-30 s to first token; 30 s ensures
+// we don't thrash through the pool on legitimately slow (but live) models.
+const FIRST_TOKEN_TIMEOUT_MS = 30_000;
 
 // Re-fetch the free model list every hour so long-running Pi sessions pick up
 // newly available models (and stop wasting retries on removed ones).
@@ -35,6 +36,7 @@ function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
 type RaceResult = {
   winner: string | null;
   exhaustedIds: string[]; // snapshot — safe to read after raceModels returns
+  timedOut: boolean;      // true iff the batch ended due to first-token timeout
   fatalError?: Error;     // 402 or similar — propagate immediately, don't retry
 };
 
@@ -109,7 +111,7 @@ async function raceModels(
 
       if ("__timeout" in resolved) {
         controllers.forEach((c) => c.abort());
-        return { winner: null, exhaustedIds: [...exhaustedIds], fatalError };
+        return { winner: null, exhaustedIds: [...exhaustedIds], timedOut: true, fatalError };
       }
 
       const { idx, result } = resolved;
@@ -129,7 +131,7 @@ async function raceModels(
 
         if (event.type === "done") {
           outStream.end();
-          return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds] };
+          return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds], timedOut: false };
         }
 
         // text_start: pipe remaining events from the winner to outStream.
@@ -142,7 +144,7 @@ async function raceModels(
         }
         outStream.end(); // defensive: no-op if already ended via done/error above
 
-        return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds] };
+        return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds], timedOut: false };
       }
 
       if (event.type === "error") {
@@ -154,7 +156,7 @@ async function raceModels(
       pending.set(idx, nextFrom(idx));
     }
 
-    return { winner: null, exhaustedIds: [...exhaustedIds], fatalError };
+    return { winner: null, exhaustedIds: [...exhaustedIds], timedOut: false, fatalError };
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -263,10 +265,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           const candidates = localRouter.nextModels(RACE_WIDTH);
           if (candidates.length === 0) break;
 
-          const { winner, exhaustedIds, fatalError } = await raceModels(
+          const { winner, exhaustedIds, timedOut, fatalError } = await raceModels(
             candidates, context, apiKey, stream, options?.signal,
           );
 
+          // Quota-exceeded models: long TTL (90s).
           exhaustedIds.forEach((id) => localRouter.markExhausted(id));
 
           if (winner !== null) {
@@ -310,10 +313,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             return;
           }
 
-          // No winner: mark non-exhausted candidates too, so we don't retry the
-          // same slow/error-prone batch immediately (they recover after TTL).
+          // No winner — skip candidates we haven't already marked exhausted.
+          // Timeout → short TTL (15s): model is alive but slow, recover quickly.
+          // Other failure → long TTL (90s): treat as quota/error, avoid for longer.
           candidates.forEach((id) => {
-            if (!exhaustedIds.includes(id)) localRouter.markExhausted(id);
+            if (!exhaustedIds.includes(id)) {
+              if (timedOut) {
+                localRouter.markSlow(id);
+              } else {
+                localRouter.markExhausted(id);
+              }
+            }
           });
         }
 
