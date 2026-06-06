@@ -265,6 +265,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           const candidates = localRouter.nextModels(RACE_WIDTH);
           if (candidates.length === 0) break;
 
+          console.log(`[pi-freerouter] Racing: ${candidates.join(", ")}`);
+
           const { winner, exhaustedIds, timedOut, fatalError } = await raceModels(
             candidates, context, apiKey, stream, options?.signal,
           );
@@ -273,6 +275,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           exhaustedIds.forEach((id) => localRouter.markExhausted(id));
 
           if (winner !== null) {
+            console.log(`[pi-freerouter] Winner: ${winner}`);
             streamClosed = true;
             return; // raceModels wrote all events and called stream.end()
           }

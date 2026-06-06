@@ -65,6 +65,30 @@ describe("streamFreeModel", () => {
     );
   });
 
+  it("throws ModelExhaustedError on 400 (model rejects request)", async () => {
+    globalThis.fetch = async () =>
+      ({ ok: false, status: 400, statusText: "Bad Request", body: null } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelExhaustedError
+    );
+  });
+
+  it("throws ModelExhaustedError on 422 (unprocessable)", async () => {
+    globalThis.fetch = async () =>
+      ({ ok: false, status: 422, statusText: "Unprocessable Entity", body: null } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelExhaustedError
+    );
+  });
+
   it("pushes text events and done on success", async () => {
     const sseLines = [
       JSON.stringify({ choices: [{ delta: { role: "assistant", content: "" }, finish_reason: null }] }),

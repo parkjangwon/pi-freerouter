@@ -1,4 +1,12 @@
-import type { AssistantMessageEventStream, Context, AssistantMessage } from "./types.js";
+import type {
+  AssistantMessageEventStream,
+  Context,
+  AssistantMessage,
+  Message,
+  TextContent,
+  ToolCall,
+  ToolResultMessage,
+} from "./types.js";
 
 export class ModelExhaustedError extends Error {
   constructor(public readonly modelId: string, public readonly status: number) {
@@ -47,6 +55,72 @@ function emitTextEnd(
   });
 }
 
+type OpenRouterContent = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type OpenRouterMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string | OpenRouterContent[] }
+  | { role: "assistant"; content: string | null; tool_calls?: OpenRouterToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+type OpenRouterToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+/**
+ * Convert Pi's internal message format to OpenRouter's chat-completion format.
+ *
+ * Pi uses role:"toolResult" and embeds tool calls inside content[]; OpenRouter
+ * expects role:"tool" and tool_calls as a top-level array on assistant messages.
+ */
+function normalizeMessages(messages: Message[]): OpenRouterMessage[] {
+  const out: OpenRouterMessage[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      if (typeof msg.content === "string") {
+        out.push({ role: "user", content: msg.content });
+      } else {
+        const parts: OpenRouterContent[] = msg.content.map((c) => {
+          if (c.type === "text") return { type: "text", text: c.text };
+          // image → data URL
+          return { type: "image_url", image_url: { url: `data:${c.mimeType};base64,${c.data}` } };
+        });
+        out.push({ role: "user", content: parts });
+      }
+    } else if (msg.role === "assistant") {
+      const textParts = (msg.content as Array<{ type: string }>)
+        .filter((c): c is TextContent => c.type === "text")
+        .map((c) => c.text)
+        .join("");
+      const toolCalls = (msg.content as Array<{ type: string }>)
+        .filter((c): c is ToolCall => c.type === "toolCall")
+        .map((tc): OpenRouterToolCall => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        }));
+
+      if (toolCalls.length > 0) {
+        out.push({ role: "assistant", content: textParts || null, tool_calls: toolCalls });
+      } else {
+        out.push({ role: "assistant", content: textParts });
+      }
+    } else if (msg.role === "toolResult") {
+      const tr = msg as ToolResultMessage;
+      const text = (tr.content as Array<{ type: string }>)
+        .filter((c): c is TextContent => c.type === "text")
+        .map((c) => c.text)
+        .join("\n");
+      out.push({ role: "tool", tool_call_id: tr.toolCallId, content: text });
+    }
+    // unknown roles: silently drop (forward compatibility)
+  }
+
+  return out;
+}
+
 export async function streamFreeModel(
   modelId: string,
   context: Context,
@@ -54,13 +128,23 @@ export async function streamFreeModel(
   outStream: AssistantMessageEventStream,
   signal?: AbortSignal
 ): Promise<void> {
-  // Fix 1: Prepend system prompt as first system message if present
-  const messages = [
+  const messages: OpenRouterMessage[] = [
     ...(context.systemPrompt ? [{ role: "system" as const, content: context.systemPrompt }] : []),
-    ...context.messages,
+    ...normalizeMessages(context.messages),
   ];
 
-  // Tool use not supported in v1 — tool calls would be received but not forwarded
+  const body: Record<string, unknown> = { model: modelId, stream: true, messages };
+
+  // Forward tool definitions if Pi provided them — free models that support
+  // function calling will use them; those that don't will return 400 and be
+  // temporarily skipped by the router.
+  if (context.tools && context.tools.length > 0) {
+    body.tools = context.tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+  }
+
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -68,11 +152,7 @@ export async function streamFreeModel(
       "Content-Type": "application/json",
       "X-Title": "pi-freerouter",
     },
-    body: JSON.stringify({
-      model: modelId,
-      stream: true,
-      messages,
-    }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -82,6 +162,11 @@ export async function streamFreeModel(
     );
   }
   if (response.status === 429 || response.status >= 500) {
+    throw new ModelExhaustedError(modelId, response.status);
+  }
+  // 400/422: model rejected the request (unsupported features, content policy, etc.)
+  // Treat like exhaustion so the router skips this model for the current batch.
+  if (response.status === 400 || response.status === 422) {
     throw new ModelExhaustedError(modelId, response.status);
   }
   if (!response.ok) {
