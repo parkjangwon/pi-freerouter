@@ -323,6 +323,10 @@ export async function streamFreeModel(
     outStream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: snapshot(output) });
     outStream.end();
   } catch (err) {
+    // Close any in-progress text/tool-call blocks so consumers don't see
+    // dangling text_start or toolcall_start events without their closers.
+    if (textStarted) emitTextEnd(outStream, output, TEXT_INDEX);
+    flushToolCalls();
     const isAbort = err instanceof Error && err.name === "AbortError";
     outStream.push({ type: "error", reason: isAbort ? "aborted" : "error", error: output });
     outStream.end();
