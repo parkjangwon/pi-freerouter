@@ -89,6 +89,39 @@ describe("streamFreeModel", () => {
     );
   });
 
+  it("emits toolcall events for tool call responses", async () => {
+    const sseLines = [
+      JSON.stringify({ choices: [{ delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_abc", type: "function", function: { name: "bash", arguments: "" } }] }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"command' } }] }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '":"ls"}' } }] }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }),
+      "[DONE]",
+    ];
+
+    globalThis.fetch = async () =>
+      ({ ok: true, status: 200, body: makeSseBody(sseLines) } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream);
+
+    const types = stream.events.map((e: any) => e.type);
+    assert.ok(types.includes("start"), "missing start event");
+    assert.ok(types.includes("toolcall_start"), "missing toolcall_start");
+    assert.ok(types.includes("toolcall_delta"), "missing toolcall_delta");
+    assert.ok(types.includes("toolcall_end"), "missing toolcall_end");
+    assert.ok(types.includes("done"), "missing done event");
+    assert.ok(stream.ended, "stream.end() was not called");
+
+    const tcEnd = stream.events.find((e: any) => e.type === "toolcall_end");
+    assert.equal(tcEnd.toolCall.id, "call_abc");
+    assert.equal(tcEnd.toolCall.name, "bash");
+    assert.deepEqual(tcEnd.toolCall.arguments, { command: "ls" });
+
+    const done = stream.events.find((e: any) => e.type === "done");
+    assert.equal(done.reason, "toolUse");
+  });
+
   it("pushes text events and done on success", async () => {
     const sseLines = [
       JSON.stringify({ choices: [{ delta: { role: "assistant", content: "" }, finish_reason: null }] }),

@@ -122,9 +122,10 @@ async function raceModels(
       const event = result.value;
       buffers[idx].push(event);
 
-      // text_start  → normal streaming win
-      // done        → valid but empty response (no text content); still a winner
-      if (event.type === "text_start" || event.type === "done") {
+      // text_start      → normal text streaming win
+      // toolcall_start  → model is making a tool call; also a valid win
+      // done            → valid but empty response (no text/tool content); still a winner
+      if (event.type === "text_start" || event.type === "toolcall_start" || event.type === "done") {
         controllers.forEach((c, j) => { if (j !== idx) c.abort(); });
 
         for (const e of buffers[idx]) outStream.push(e);
@@ -134,7 +135,7 @@ async function raceModels(
           return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds], timedOut: false };
         }
 
-        // text_start: pipe remaining events from the winner to outStream.
+        // text_start / toolcall_start: pipe remaining events from the winner to outStream.
         for await (const e of { [Symbol.asyncIterator]: () => iterators[idx] }) {
           outStream.push(e);
           if (e.type === "done" || e.type === "error") {

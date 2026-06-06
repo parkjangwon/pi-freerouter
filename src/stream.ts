@@ -193,14 +193,33 @@ export async function streamFreeModel(
   outStream.push({ type: "start", partial: snapshot(output) });
 
   let textStarted = false;
-  // Text content is always at index 0 (we only handle text for now)
+  // Text content is always at index 0.
   const TEXT_INDEX = 0;
+
+  // Tool call accumulation: OpenRouter streams tool calls as index-keyed deltas.
+  type PendingTC = { contentIndex: number; id: string; name: string; argsBuffer: string };
+  const pendingToolCalls = new Map<number, PendingTC>();
+
+  function flushToolCalls(): void {
+    for (const [, p] of pendingToolCalls) {
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(p.argsBuffer); } catch { args = { _raw: p.argsBuffer }; }
+      const block = output.content[p.contentIndex];
+      if (block?.type === "toolCall") (block as ToolCall).arguments = args;
+      outStream.push({
+        type: "toolcall_end",
+        contentIndex: p.contentIndex,
+        toolCall: { type: "toolCall", id: p.id, name: p.name, arguments: args },
+        partial: snapshot(output),
+      });
+    }
+    pendingToolCalls.clear();
+  }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // Fix 3: Wrap streaming body in try/finally to ensure outStream.end() is always called
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -215,9 +234,8 @@ export async function streamFreeModel(
         const data = line.slice(6).trim();
 
         if (data === "[DONE]") {
-          if (textStarted) {
-            emitTextEnd(outStream, output, TEXT_INDEX);
-          }
+          if (textStarted) emitTextEnd(outStream, output, TEXT_INDEX);
+          flushToolCalls();
           outStream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: snapshot(output) });
           outStream.end();
           return;
@@ -241,45 +259,57 @@ export async function streamFreeModel(
           output.stopReason = normalizeStopReason(finishReason);
         }
 
+        // ── Text content ──────────────────────────────────────────────────────
         if (delta?.content) {
           if (!textStarted) {
-            // Insert the text content block before pushing text_start
             output.content.push({ type: "text", text: "" });
-            outStream.push({
-              type: "text_start",
-              contentIndex: TEXT_INDEX,
-              partial: snapshot(output),
-            });
+            outStream.push({ type: "text_start", contentIndex: TEXT_INDEX, partial: snapshot(output) });
             textStarted = true;
           }
-
           const textBlock = output.content[TEXT_INDEX];
-          if (textBlock?.type === "text") {
-            textBlock.text += delta.content;
-          }
+          if (textBlock?.type === "text") textBlock.text += delta.content;
+          outStream.push({ type: "text_delta", contentIndex: TEXT_INDEX, delta: delta.content, partial: snapshot(output) });
+        }
 
-          outStream.push({
-            type: "text_delta",
-            contentIndex: TEXT_INDEX,
-            delta: delta.content,
-            partial: snapshot(output),
-          });
+        // ── Tool calls ────────────────────────────────────────────────────────
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls as Array<{
+            index: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>) {
+            const tcIdx = tc.index ?? 0;
+
+            if (tc.id) {
+              // First chunk for this tool call — open it.
+              const contentIndex = output.content.length;
+              const name = tc.function?.name ?? "";
+              output.content.push({ type: "toolCall", id: tc.id, name, arguments: {} });
+              pendingToolCalls.set(tcIdx, { contentIndex, id: tc.id, name, argsBuffer: tc.function?.arguments ?? "" });
+              outStream.push({ type: "toolcall_start", contentIndex, partial: snapshot(output) });
+            } else if (tc.function?.arguments) {
+              // Continuation chunk — stream argument JSON fragment.
+              const p = pendingToolCalls.get(tcIdx);
+              if (p) {
+                p.argsBuffer += tc.function.arguments;
+                outStream.push({ type: "toolcall_delta", contentIndex: p.contentIndex, delta: tc.function.arguments, partial: snapshot(output) });
+              }
+            }
+          }
         }
       }
     }
 
-    // Fix 5: Flush TextDecoder at stream end
+    // Flush TextDecoder
     const remaining = decoder.decode();
     if (remaining) buffer += remaining;
 
     // Fallback: stream ended without [DONE]
-    if (textStarted) {
-      emitTextEnd(outStream, output, TEXT_INDEX);
-    }
+    if (textStarted) emitTextEnd(outStream, output, TEXT_INDEX);
+    flushToolCalls();
     outStream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: snapshot(output) });
     outStream.end();
   } catch (err) {
-    // Fix 3: Ensure stream is closed on mid-stream errors
     const isAbort = err instanceof Error && err.name === "AbortError";
     outStream.push({ type: "error", reason: isAbort ? "aborted" : "error", error: output });
     outStream.end();
