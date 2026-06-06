@@ -7,8 +7,7 @@ Pi coding agent extension that routes every request through OpenRouter's free mo
 **1. Install**
 
 ```bash
-npm install -g pi-freerouter
-pi install pi-freerouter
+pi install npm:pi-freerouter
 ```
 
 **2. Set your OpenRouter API key**
