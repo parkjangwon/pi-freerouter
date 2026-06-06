@@ -73,6 +73,7 @@ export interface AssistantMessage {
   usage: Usage;
   stopReason: StopReason;
   timestamp: number;
+  errorMessage?: string;
 }
 
 export interface ToolResultMessage {
@@ -108,13 +109,15 @@ export interface Model {
   headers?: Record<string, string>;
 }
 
+export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
 /** Options passed to ProviderConfig.streamSimple. */
 export interface SimpleStreamOptions {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
   apiKey?: string;
-  reasoning?: string;
+  reasoning?: ThinkingLevel;
 }
 
 /**
@@ -150,6 +153,8 @@ export interface AssistantMessageEventStream extends AsyncIterable<AssistantMess
  * callback signature — extensions never need to instantiate the stream
  * themselves.  If you do need a concrete implementation for testing, create
  * one that satisfies the AsyncIterable interface above.
+ *
+ * @internal — for testing only. Pi runtime provides the real factory via streamSimple context.
  */
 export function createAssistantMessageEventStream(): AssistantMessageEventStream {
   const queue: AssistantMessageEvent[] = [];
@@ -170,9 +175,17 @@ export function createAssistantMessageEventStream(): AssistantMessageEventStream
       if (event.type === "done") {
         finalResult = event.message;
         resolveResult(event.message);
+        isDone = true;
+        while (waiters.length > 0) {
+          waiters.shift()!({ value: undefined as unknown as AssistantMessageEvent, done: true });
+        }
       } else if (event.type === "error") {
         finalResult = event.error;
         resolveResult(event.error);
+        isDone = true;
+        while (waiters.length > 0) {
+          waiters.shift()!({ value: undefined as unknown as AssistantMessageEvent, done: true });
+        }
       }
     },
     end(result?: AssistantMessage) {
