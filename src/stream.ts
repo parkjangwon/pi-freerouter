@@ -126,7 +126,8 @@ export async function streamFreeModel(
   context: Context,
   apiKey: string,
   outStream: AssistantMessageEventStream,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maxTokens?: number,
 ): Promise<void> {
   const messages: OpenRouterMessage[] = [
     ...(context.systemPrompt ? [{ role: "system" as const, content: context.systemPrompt }] : []),
@@ -134,6 +135,8 @@ export async function streamFreeModel(
   ];
 
   const body: Record<string, unknown> = { model: modelId, stream: true, messages };
+
+  if (maxTokens !== undefined) body.max_tokens = maxTokens;
 
   // Forward tool definitions if Pi provided them — free models that support
   // function calling will use them; those that don't will return 400 and be
@@ -243,6 +246,16 @@ export async function streamFreeModel(
 
         let chunk: any;
         try { chunk = JSON.parse(data); } catch { continue; }
+
+        // OpenRouter sometimes streams errors inline as {"error":{"code":N,"message":"..."}}
+        // instead of returning a non-200 HTTP status.
+        if (chunk.error) {
+          const code: number = chunk.error.code ?? chunk.error.status ?? 0;
+          if (code === 402) throw new ModelFatalError(chunk.error.message ?? "insufficient credits");
+          if (code === 429 || code >= 500) throw new ModelExhaustedError(modelId, code);
+          // Other inline errors (e.g. content policy): treat as exhausted so we skip this model.
+          throw new ModelExhaustedError(modelId, code || 400);
+        }
 
         const choice = chunk.choices?.[0];
         const delta = choice?.delta;

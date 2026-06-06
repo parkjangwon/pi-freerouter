@@ -89,6 +89,36 @@ describe("streamFreeModel", () => {
     );
   });
 
+  it("throws ModelExhaustedError on inline SSE 429 error", async () => {
+    const sseLines = [
+      JSON.stringify({ error: { code: 429, message: "rate limit exceeded" } }),
+    ];
+    globalThis.fetch = async () =>
+      ({ ok: true, status: 200, body: makeSseBody(sseLines) } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelExhaustedError
+    );
+  });
+
+  it("throws ModelFatalError on inline SSE 402 error", async () => {
+    const sseLines = [
+      JSON.stringify({ error: { code: 402, message: "insufficient credits" } }),
+    ];
+    globalThis.fetch = async () =>
+      ({ ok: true, status: 200, body: makeSseBody(sseLines) } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelFatalError
+    );
+  });
+
   it("emits toolcall events for tool call responses", async () => {
     const sseLines = [
       JSON.stringify({ choices: [{ delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_abc", type: "function", function: { name: "bash", arguments: "" } }] }, finish_reason: null }] }),

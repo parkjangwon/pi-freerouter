@@ -57,6 +57,7 @@ async function raceModels(
   apiKey: string,
   outStream: AssistantMessageEventStream,
   parentSignal?: AbortSignal,
+  maxTokens?: number,
 ): Promise<RaceResult> {
   const controllers = candidateIds.map(() => new AbortController());
   const proxyStreams = candidateIds.map(() => createAssistantMessageEventStream());
@@ -68,7 +69,7 @@ async function raceModels(
     const sig = parentSignal
       ? mergeSignals(parentSignal, controllers[i].signal)
       : controllers[i].signal;
-    streamFreeModel(modelId, context, apiKey, proxyStreams[i], sig).catch((err: unknown) => {
+    streamFreeModel(modelId, context, apiKey, proxyStreams[i], sig, maxTokens).catch((err: unknown) => {
       if (err instanceof ModelExhaustedError) {
         exhaustedIds.push(modelId);
       } else if (err instanceof ModelFatalError) {
@@ -269,7 +270,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           console.log(`[pi-freerouter] Racing: ${candidates.join(", ")}`);
 
           const { winner, exhaustedIds, timedOut, fatalError } = await raceModels(
-            candidates, context, apiKey, stream, options?.signal,
+            candidates, context, apiKey, stream, options?.signal, options?.maxTokens,
           );
 
           // Quota-exceeded models: long TTL (90s).
