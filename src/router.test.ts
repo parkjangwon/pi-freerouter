@@ -46,4 +46,24 @@ describe("FreeRouter", () => {
     r.markExhausted("a:free"); // second call, same ID
     assert.equal(r.nextModel(), "b:free"); // still correct
   });
+
+  it("nextModels returns up to count non-exhausted models in order", () => {
+    const r = new FreeRouter(["a:free", "b:free", "c:free", "d:free"]);
+    r.markExhausted("b:free");
+    assert.deepEqual(r.nextModels(2), ["a:free", "c:free"]);
+  });
+
+  it("nextModels returns fewer than count when not enough available", () => {
+    const r = new FreeRouter(["a:free", "b:free"]);
+    r.markExhausted("b:free");
+    assert.deepEqual(r.nextModels(3), ["a:free"]);
+  });
+
+  it("exhausted model returns after TTL expires", async () => {
+    const r = new FreeRouter(["a:free", "b:free"], 20); // 20ms TTL for test speed
+    r.markExhausted("a:free");
+    assert.equal(r.nextModel(), "b:free"); // a is excluded
+    await new Promise((res) => setTimeout(res, 30));   // wait past TTL
+    assert.equal(r.nextModel(), "a:free"); // a is back at front of list
+  });
 });

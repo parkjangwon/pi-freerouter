@@ -64,4 +64,26 @@ describe("fetchFreeModels", () => {
       /401/
     );
   });
+
+  it("sorts fast providers before unknown providers", async () => {
+    const mockPayload = {
+      data: [
+        { id: "meta-llama/llama-3.1-8b:free", name: "Llama (unknown provider)", context_length: 32768 },
+        { id: "groq/llama-3.3-70b:free", name: "Groq Llama", context_length: 131072 },
+        { id: "cerebras/llama3.1-8b:free", name: "Cerebras Llama", context_length: 8192 },
+      ],
+    };
+
+    globalThis.fetch = async () =>
+      ({ ok: true, json: async () => mockPayload } as any);
+
+    const { fetchFreeModels } = await import("./discovery.js");
+    const models = await fetchFreeModels("sk-or-test");
+
+    assert.equal(models.length, 3);
+    // Groq (score 0) before Cerebras (score 1) before unknown (score 5)
+    assert.ok(models[0].id.startsWith("groq/"), `expected groq first, got ${models[0].id}`);
+    assert.ok(models[1].id.startsWith("cerebras/"), `expected cerebras second, got ${models[1].id}`);
+    assert.ok(models[2].id.startsWith("meta-llama/"), `expected meta-llama last, got ${models[2].id}`);
+  });
 });
