@@ -1,11 +1,13 @@
 import type { ProviderModelConfig } from "./types.js";
 
+const DEFAULT_CONTEXT_WINDOW = 128_000;
+const DEFAULT_MAX_TOKENS = 4_096;
+
 interface OpenRouterModel {
   id: string;
   name: string;
   context_length?: number;
   top_provider?: { max_completion_tokens?: number };
-  pricing: { prompt: string; completion: string };
 }
 
 interface OpenRouterModelsResponse {
@@ -27,7 +29,8 @@ export async function fetchFreeModels(apiKey: string): Promise<ProviderModelConf
 
   const payload = (await response.json()) as OpenRouterModelsResponse;
 
-  return payload.data
+  const models = payload.data ?? [];
+  return models
     .filter((m) => m.id.includes(":free"))
     .map((m) => ({
       id: m.id,
@@ -35,7 +38,7 @@ export async function fetchFreeModels(apiKey: string): Promise<ProviderModelConf
       reasoning: false,
       input: ["text"] as ("text" | "image")[],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: m.context_length ?? 128000,
-      maxTokens: m.top_provider?.max_completion_tokens ?? 4096,
+      contextWindow: m.context_length ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: m.top_provider?.max_completion_tokens ?? DEFAULT_MAX_TOKENS,
     }));
 }

@@ -1,7 +1,16 @@
 import { strict as assert } from "node:assert";
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 
 describe("fetchFreeModels", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
   it("filters only :free models and maps fields", async () => {
     const mockPayload = {
       data: [
