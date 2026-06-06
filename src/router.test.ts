@@ -33,4 +33,17 @@ describe("FreeRouter", () => {
     const r = new FreeRouter([]);
     assert.equal(r.nextModel(), null);
   });
+
+  it("ignores markExhausted with unknown ID", () => {
+    const r = new FreeRouter(["a:free", "b:free"]);
+    r.markExhausted("unknown:free"); // not in models list
+    assert.equal(r.nextModel(), "a:free"); // unchanged
+  });
+
+  it("markExhausted is idempotent", () => {
+    const r = new FreeRouter(["a:free", "b:free"]);
+    r.markExhausted("a:free");
+    r.markExhausted("a:free"); // second call, same ID
+    assert.equal(r.nextModel(), "b:free"); // still correct
+  });
 });

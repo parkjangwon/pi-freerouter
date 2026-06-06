@@ -8,6 +8,10 @@ export class FreeRouter {
   }
 
   markExhausted(id: string): void {
+    if (!this.models.includes(id)) {
+      console.warn(`[pi-freerouter] markExhausted called with unknown model ID: ${id}`);
+      return;
+    }
     this.exhausted.add(id);
   }
 }

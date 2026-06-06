@@ -8,7 +8,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test dist/**/*.test.js"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.0.0"
