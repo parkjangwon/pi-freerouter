@@ -43,7 +43,8 @@ export async function streamFreeModel(
   modelId: string,
   context: Context,
   apiKey: string,
-  outStream: AssistantMessageEventStream
+  outStream: AssistantMessageEventStream,
+  signal?: AbortSignal
 ): Promise<void> {
   // Fix 1: Prepend system prompt as first system message if present
   const messages = [
@@ -70,6 +71,7 @@ export async function streamFreeModel(
       messages,
       ...(openAiTools?.length ? { tools: openAiTools } : {}),
     }),
+    signal,
   });
 
   if (response.status === 429 || response.status >= 500) {

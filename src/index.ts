@@ -36,21 +36,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       },
     ],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    streamSimple: ((_model: unknown, context: import("./types.js").Context) => {
+    streamSimple: ((_model: unknown, context: import("./types.js").Context, options?: import("./types.js").SimpleStreamOptions) => {
       const stream = createAssistantMessageEventStream();
+      let streamClosed = false;
 
       (async () => {
         let modelId = router.nextModel();
 
         while (modelId) {
           try {
-            await streamFreeModel(modelId, context, apiKey, stream);
+            await streamFreeModel(modelId, context, apiKey, stream, options?.signal);
             return;
           } catch (err) {
             if (err instanceof ModelExhaustedError) {
               router.markExhausted(err.modelId);
               modelId = router.nextModel();
             } else {
+              // stream.ts already closed the stream and pushed error; just propagate
+              streamClosed = true;
               throw err;
             }
           }
@@ -76,29 +79,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           errorMessage: errMsg,
           timestamp: Date.now(),
         };
+        streamClosed = true;
         stream.push({ type: "error", reason: "error", error: exhaustedOutput });
         stream.end();
       })().catch((err: unknown) => {
-        const errOutput = {
-          role: "assistant" as const,
-          content: [] as never[],
-          api: "openrouter",
-          provider: "freerouter",
-          model: "free-router",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-          stopReason: "error" as const,
-          errorMessage: String(err),
-          timestamp: Date.now(),
-        };
-        stream.push({ type: "error", reason: "error", error: errOutput });
-        stream.end();
+        if (!streamClosed) {
+          const errOutput = {
+            role: "assistant" as const,
+            content: [] as never[],
+            api: "openrouter",
+            provider: "freerouter",
+            model: "free-router",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "error" as const,
+            errorMessage: String(err),
+            timestamp: Date.now(),
+          };
+          stream.push({ type: "error", reason: "error", error: errOutput });
+          stream.end();
+        }
       });
 
       // Cast: local stream satisfies the pi-ai class interface at runtime;
