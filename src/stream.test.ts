@@ -1,0 +1,88 @@
+import { strict as assert } from "node:assert";
+import { describe, it, beforeEach, afterEach } from "node:test";
+import { ModelExhaustedError } from "./stream.js";
+
+function makeStream() {
+  const events: any[] = [];
+  let ended = false;
+  return {
+    push: (e: any) => events.push(e),
+    end: () => { ended = true; },
+    get events() { return events; },
+    get ended() { return ended; },
+  };
+}
+
+function makeSseBody(lines: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const text = lines.map((l) => `data: ${l}\n\n`).join("");
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(text));
+      controller.close();
+    },
+  });
+}
+
+describe("streamFreeModel", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("throws ModelExhaustedError on 429", async () => {
+    globalThis.fetch = async () =>
+      ({ ok: false, status: 429, statusText: "Too Many Requests", body: null } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelExhaustedError
+    );
+  });
+
+  it("throws ModelExhaustedError on 503", async () => {
+    globalThis.fetch = async () =>
+      ({ ok: false, status: 503, statusText: "Service Unavailable", body: null } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelExhaustedError
+    );
+  });
+
+  it("pushes text events and done on success", async () => {
+    const sseLines = [
+      JSON.stringify({ choices: [{ delta: { role: "assistant", content: "" }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: { content: "Hello" }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: { content: " world" }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }),
+      "[DONE]",
+    ];
+
+    globalThis.fetch = async () =>
+      ({ ok: true, status: 200, body: makeSseBody(sseLines) } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream);
+
+    const types = stream.events.map((e: any) => e.type);
+    assert.ok(types.includes("start"), "missing start event");
+    assert.ok(types.includes("text_start"), "missing text_start");
+    assert.ok(types.includes("text_delta"), "missing text_delta");
+    assert.ok(types.includes("done"), "missing done event");
+    assert.ok(stream.ended, "stream.end() was not called");
+
+    const deltas = stream.events
+      .filter((e: any) => e.type === "text_delta")
+      .map((e: any) => e.delta);
+    assert.deepEqual(deltas, ["Hello", " world"]);
+
+    const done = stream.events.find((e: any) => e.type === "done");
+    assert.equal(done.message.usage.input, 5);
+    assert.equal(done.message.usage.output, 2);
+  });
+});
