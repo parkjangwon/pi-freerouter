@@ -1,0 +1,22 @@
+{
+  "name": "pi-freerouter",
+  "version": "0.1.0",
+  "description": "Pi coding agent extension — auto-routes to free OpenRouter models",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "typescript": "^5.0.0"
+  },
+  "keywords": ["pi", "pi-coding-agent", "openrouter"],
+  "license": "MIT"
+}
