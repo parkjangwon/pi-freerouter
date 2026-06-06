@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it, beforeEach, afterEach } from "node:test";
-import { ModelExhaustedError } from "./stream.js";
+import { ModelExhaustedError, ModelFatalError } from "./stream.js";
 
 function makeStream() {
   const events: any[] = [];
@@ -38,6 +38,18 @@ describe("streamFreeModel", () => {
     await assert.rejects(
       () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
       ModelExhaustedError
+    );
+  });
+
+  it("throws ModelFatalError on 402", async () => {
+    globalThis.fetch = async () =>
+      ({ ok: false, status: 402, statusText: "Payment Required", body: null } as any);
+
+    const { streamFreeModel } = await import("./stream.js");
+    const stream = makeStream() as any;
+    await assert.rejects(
+      () => streamFreeModel("model:free", { messages: [] } as any, "sk-or-test", stream),
+      ModelFatalError
     );
   });
 

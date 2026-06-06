@@ -9,7 +9,7 @@ import type {
 import { createAssistantMessageEventStream } from "./types.js";
 import { fetchFreeModels } from "./discovery.js";
 import { FreeRouter } from "./router.js";
-import { streamFreeModel, ModelExhaustedError } from "./stream.js";
+import { streamFreeModel, ModelExhaustedError, ModelFatalError } from "./stream.js";
 
 // Race this many free models simultaneously; first to stream wins.
 const RACE_WIDTH = 3;
@@ -17,6 +17,10 @@ const RACE_WIDTH = 3;
 // If no candidate emits its first token within this window, abort and try the
 // next batch. Keeps perceived latency bounded even on universally-slow batches.
 const FIRST_TOKEN_TIMEOUT_MS = 5_000;
+
+// Re-fetch the free model list every hour so long-running Pi sessions pick up
+// newly available models (and stop wasting retries on removed ones).
+const REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
 
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const controller = new AbortController();
@@ -28,13 +32,22 @@ function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   return controller.signal;
 }
 
+type RaceResult = {
+  winner: string | null;
+  exhaustedIds: string[]; // snapshot — safe to read after raceModels returns
+  fatalError?: Error;     // 402 or similar — propagate immediately, don't retry
+};
+
 /**
  * Start candidateIds concurrently and forward events from the first model that
  * emits `text_start` (or a valid empty `done`) to outStream; abort the rest.
  *
- * Key correctness invariant: pending uses a Map<candidateIdx, Promise> so that
- * removal is always by candidate index, never by array position (which diverges
- * after the first re-push).
+ * Correctness notes:
+ * - Uses Map<candidateIdx, Promise> so delete(idx) is always by candidate index,
+ *   never by array position (which diverges after the first re-push).
+ * - Snapshots exhaustedIds at each return so late floating-.catch() pushes after
+ *   raceModels returns don't corrupt the caller's view.
+ * - Tracks fatalError (e.g. 402) separately from quota exhaustion.
  */
 async function raceModels(
   candidateIds: string[],
@@ -42,10 +55,11 @@ async function raceModels(
   apiKey: string,
   outStream: AssistantMessageEventStream,
   parentSignal?: AbortSignal,
-): Promise<{ winner: string | null; exhaustedIds: string[] }> {
+): Promise<RaceResult> {
   const controllers = candidateIds.map(() => new AbortController());
   const proxyStreams = candidateIds.map(() => createAssistantMessageEventStream());
   const exhaustedIds: string[] = [];
+  let fatalError: Error | undefined;
 
   // Start all candidates concurrently; each writes to its own isolated proxy stream.
   candidateIds.forEach((modelId, i) => {
@@ -53,8 +67,12 @@ async function raceModels(
       ? mergeSignals(parentSignal, controllers[i].signal)
       : controllers[i].signal;
     streamFreeModel(modelId, context, apiKey, proxyStreams[i], sig).catch((err: unknown) => {
-      if (err instanceof ModelExhaustedError) exhaustedIds.push(modelId);
-      proxyStreams[i].end(); // ensure iterator terminates if streamFreeModel didn't
+      if (err instanceof ModelExhaustedError) {
+        exhaustedIds.push(modelId);
+      } else if (err instanceof ModelFatalError) {
+        fatalError = fatalError ?? (err as Error); // keep first fatal error
+      }
+      proxyStreams[i].end(); // ensure iterator terminates
     });
   });
 
@@ -90,9 +108,8 @@ async function raceModels(
       ]);
 
       if ("__timeout" in resolved) {
-        // Batch is too slow — abort all, caller will try the next batch.
         controllers.forEach((c) => c.abort());
-        return { winner: null, exhaustedIds };
+        return { winner: null, exhaustedIds: [...exhaustedIds], fatalError };
       }
 
       const { idx, result } = resolved;
@@ -106,19 +123,16 @@ async function raceModels(
       // text_start  → normal streaming win
       // done        → valid but empty response (no text content); still a winner
       if (event.type === "text_start" || event.type === "done") {
-        // Abort all losing candidates immediately.
         controllers.forEach((c, j) => { if (j !== idx) c.abort(); });
 
-        // Forward all buffered events (including the winning event itself).
         for (const e of buffers[idx]) outStream.push(e);
 
         if (event.type === "done") {
-          // Empty response is complete — close and return.
           outStream.end();
-          return { winner: candidateIds[idx], exhaustedIds };
+          return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds] };
         }
 
-        // text_start: pipe the remaining events from the winner to outStream.
+        // text_start: pipe remaining events from the winner to outStream.
         for await (const e of { [Symbol.asyncIterator]: () => iterators[idx] }) {
           outStream.push(e);
           if (e.type === "done" || e.type === "error") {
@@ -128,12 +142,11 @@ async function raceModels(
         }
         outStream.end(); // defensive: no-op if already ended via done/error above
 
-        return { winner: candidateIds[idx], exhaustedIds };
+        return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds] };
       }
 
       if (event.type === "error") {
-        // This candidate had a non-quota failure; its stream will end next tick.
-        // Don't re-add to pending — let it drain via result.done on the next race.
+        // Non-quota failure; stream ends next tick — don't re-add to pending.
         continue;
       }
 
@@ -141,7 +154,7 @@ async function raceModels(
       pending.set(idx, nextFrom(idx));
     }
 
-    return { winner: null, exhaustedIds };
+    return { winner: null, exhaustedIds: [...exhaustedIds], fatalError };
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -164,20 +177,44 @@ const BASE_ERROR_OUTPUT = {
 };
 
 export default async function (pi: ExtensionAPI): Promise<void> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
+  const apiKeyRaw = process.env.OPENROUTER_API_KEY;
+  if (!apiKeyRaw) {
     throw new Error("pi-freerouter: OPENROUTER_API_KEY is not set");
   }
+  // Explicit string type so closures (streamSimple, refreshModels) see `string`,
+  // not `string | undefined` — TypeScript doesn't carry narrowing into inner fns.
+  const apiKey: string = apiKeyRaw;
 
   const freeModels = await fetchFreeModels(apiKey);
   if (freeModels.length === 0) {
     throw new Error("pi-freerouter: No free models found on OpenRouter");
   }
 
-  const router = new FreeRouter(freeModels.map((m) => m.id));
+  // `let` so the background refresh can replace it; each streamSimple call
+  // captures its own snapshot via `const localRouter = router`.
+  let router = new FreeRouter(freeModels.map((m) => m.id));
 
   const maxContext = Math.max(...freeModels.map((m) => m.contextWindow));
   const maxTokens = Math.max(...freeModels.map((m) => m.maxTokens));
+
+  // Hourly background refresh — picks up new free models without restarting Pi.
+  async function refreshModels(): Promise<void> {
+    try {
+      const fresh = await fetchFreeModels(apiKey);
+      if (fresh.length > 0) {
+        router = new FreeRouter(fresh.map((m) => m.id));
+        console.log(`[pi-freerouter] Model list refreshed: ${fresh.length} free models`);
+      }
+    } catch (err) {
+      console.warn("[pi-freerouter] Failed to refresh free model list:", err);
+    }
+  }
+
+  const refreshTimer = setInterval(() => { void refreshModels(); }, REFRESH_INTERVAL_MS);
+  // Don't keep the Node process alive solely for this timer.
+  if (typeof (refreshTimer as NodeJS.Timeout).unref === "function") {
+    (refreshTimer as NodeJS.Timeout).unref();
+  }
 
   pi.registerProvider("freerouter", {
     baseUrl: "https://openrouter.ai/api/v1",
@@ -199,6 +236,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const stream = createAssistantMessageEventStream();
       let streamClosed = false;
 
+      // Capture router at request start so mid-request refreshes don't affect
+      // this in-flight request's exhaustion tracking.
+      const localRouter = router;
+
       (async () => {
         while (true) {
           // Check abort before starting each batch.
@@ -219,22 +260,39 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             return;
           }
 
-          const candidates = router.nextModels(RACE_WIDTH);
+          const candidates = localRouter.nextModels(RACE_WIDTH);
           if (candidates.length === 0) break;
 
-          const { winner, exhaustedIds } = await raceModels(
+          const { winner, exhaustedIds, fatalError } = await raceModels(
             candidates, context, apiKey, stream, options?.signal,
           );
 
-          exhaustedIds.forEach((id) => router.markExhausted(id));
+          exhaustedIds.forEach((id) => localRouter.markExhausted(id));
 
           if (winner !== null) {
             streamClosed = true;
             return; // raceModels wrote all events and called stream.end()
           }
 
-          // Check abort again — the race may have ended because all candidates
-          // were aborted by the parent signal (not because of quota exhaustion).
+          // Fatal error (e.g., 402 Insufficient Credits) — surface immediately.
+          if (fatalError) {
+            const errMsg = fatalError.message;
+            streamClosed = true;
+            stream.push({
+              type: "error",
+              reason: "error",
+              error: {
+                ...BASE_ERROR_OUTPUT,
+                content: [{ type: "text", text: errMsg }],
+                errorMessage: errMsg,
+                timestamp: Date.now(),
+              },
+            });
+            stream.end();
+            return;
+          }
+
+          // Check abort — race may have ended because parent signal fired.
           if (options?.signal?.aborted) {
             const abortMsg = "Request was cancelled.";
             streamClosed = true;
@@ -255,7 +313,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           // No winner: mark non-exhausted candidates too, so we don't retry the
           // same slow/error-prone batch immediately (they recover after TTL).
           candidates.forEach((id) => {
-            if (!exhaustedIds.includes(id)) router.markExhausted(id);
+            if (!exhaustedIds.includes(id)) localRouter.markExhausted(id);
           });
         }
 

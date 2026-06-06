@@ -7,6 +7,14 @@ export class ModelExhaustedError extends Error {
   }
 }
 
+/** Thrown when the API key has insufficient credits (HTTP 402). Not retriable. */
+export class ModelFatalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelFatalError";
+  }
+}
+
 // Fix 6: Helper — normalize OpenRouter finish_reason to Pi StopReason
 function normalizeStopReason(finishReason: string | null | undefined): "stop" | "length" | "toolUse" {
   if (finishReason === "tool_calls") return "toolUse";
@@ -68,6 +76,11 @@ export async function streamFreeModel(
     signal,
   });
 
+  if (response.status === 402) {
+    throw new ModelFatalError(
+      "OpenRouter API key has insufficient credits. Add credits at openrouter.ai/credits.",
+    );
+  }
   if (response.status === 429 || response.status >= 500) {
     throw new ModelExhaustedError(modelId, response.status);
   }
