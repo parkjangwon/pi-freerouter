@@ -16,7 +16,7 @@ pi install npm:pi-freerouter
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
-Free key at [openrouter.ai/keys](https://openrouter.ai/keys). No credit card required.
+Free key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
 **3. Start Pi**
 
