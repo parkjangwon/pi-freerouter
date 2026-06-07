@@ -22,6 +22,8 @@ const FIRST_TOKEN_TIMEOUT_MS = 30_000;
 // Re-fetch the free model list every hour so long-running Pi sessions pick up
 // newly available models (and stop wasting retries on removed ones).
 const REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
+const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
+const DEFAULT_MODEL_MAX_TOKENS = 4_096;
 
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const controller = new AbortController();
@@ -219,32 +221,48 @@ const BASE_ERROR_OUTPUT = {
 };
 
 export default async function (pi: ExtensionAPI): Promise<void> {
-  const apiKeyRaw = process.env.OPENROUTER_API_KEY;
-  if (!apiKeyRaw) {
-    throw new Error("pi-freerouter: OPENROUTER_API_KEY is not set");
-  }
-  // Explicit string type so closures (streamSimple, refreshModels) see `string`,
-  // not `string | undefined` — TypeScript doesn't carry narrowing into inner fns.
-  const apiKey: string = apiKeyRaw;
-
-  const freeModels = await fetchFreeModels(apiKey);
-  if (freeModels.length === 0) {
-    throw new Error("pi-freerouter: No free models found on OpenRouter");
-  }
-
   // `let` so the background refresh can replace it; each streamSimple call
   // captures its own snapshot via `const localRouter = router`.
-  let router = new FreeRouter(freeModels.map((m) => m.id));
+  let router: FreeRouter | undefined;
+  let modelFetchPromise: Promise<FreeRouter> | undefined;
+  let maxTokens = DEFAULT_MODEL_MAX_TOKENS;
 
-  const maxContext = Math.max(...freeModels.map((m) => m.contextWindow));
-  const maxTokens = Math.max(...freeModels.map((m) => m.maxTokens));
+  function currentApiKey(): string | undefined {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    return apiKey && apiKey.length > 0 ? apiKey : undefined;
+  }
+
+  async function ensureRouter(apiKey: string): Promise<FreeRouter> {
+    if (router) return router;
+
+    modelFetchPromise ??= fetchFreeModels(apiKey)
+      .then((freeModels) => {
+        if (freeModels.length === 0) {
+          throw new Error("pi-freerouter: No free models found on OpenRouter");
+        }
+
+        router = new FreeRouter(freeModels.map((m) => m.id));
+        maxTokens = Math.max(...freeModels.map((m) => m.maxTokens));
+        return router;
+      })
+      .catch((err: unknown) => {
+        modelFetchPromise = undefined;
+        throw err;
+      });
+
+    return modelFetchPromise;
+  }
 
   // Hourly background refresh — picks up new free models without restarting Pi.
   async function refreshModels(): Promise<void> {
+    const apiKey = currentApiKey();
+    if (!apiKey) return;
+
     try {
       const fresh = await fetchFreeModels(apiKey);
       if (fresh.length > 0) {
         router = new FreeRouter(fresh.map((m) => m.id));
+        maxTokens = Math.max(...fresh.map((m) => m.maxTokens));
         console.log(`[pi-freerouter] Model list refreshed: ${fresh.length} free models`);
       }
     } catch (err) {
@@ -260,7 +278,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.registerProvider("freerouter", {
     baseUrl: "https://openrouter.ai/api/v1",
-    apiKey,
+    apiKey: currentApiKey() ?? "",
     api: "openai-completions",
     models: [
       {
@@ -269,7 +287,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: maxContext,
+        contextWindow: DEFAULT_MODEL_CONTEXT_WINDOW,
         maxTokens,
       },
     ],
@@ -278,15 +296,35 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const stream = createAssistantMessageEventStream();
       let streamClosed = false;
 
-      // Capture router at request start so mid-request refreshes don't affect
-      // this in-flight request's exhaustion tracking.
-      const localRouter = router;
       // Per-request set: each model is tried at most once per streamSimple call.
       // Prevents an infinite loop when SLOW_TTL_MS < FIRST_TOKEN_TIMEOUT_MS causes
       // timed-out models to re-enter the pool before the next batch completes.
       const triedThisRequest = new Set<string>();
 
       (async () => {
+        const apiKey = currentApiKey();
+        if (!apiKey) {
+          const errMsg =
+            "OPENROUTER_API_KEY is not set. Set it, then retry your prompt.";
+          streamClosed = true;
+          stream.push({
+            type: "error",
+            reason: "error",
+            error: {
+              ...BASE_ERROR_OUTPUT,
+              content: [{ type: "text", text: errMsg }],
+              errorMessage: errMsg,
+              timestamp: Date.now(),
+            },
+          });
+          stream.end();
+          return;
+        }
+
+        // Capture router at request start so mid-request refreshes don't affect
+        // this in-flight request's exhaustion tracking.
+        const localRouter = await ensureRouter(apiKey);
+
         while (true) {
           // Check abort before starting each batch.
           if (options?.signal?.aborted) {
