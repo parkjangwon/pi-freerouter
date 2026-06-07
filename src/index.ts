@@ -243,6 +243,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       // Capture router at request start so mid-request refreshes don't affect
       // this in-flight request's exhaustion tracking.
       const localRouter = router;
+      // Per-request set: each model is tried at most once per streamSimple call.
+      // Prevents an infinite loop when SLOW_TTL_MS < FIRST_TOKEN_TIMEOUT_MS causes
+      // timed-out models to re-enter the pool before the next batch completes.
+      const triedThisRequest = new Set<string>();
 
       (async () => {
         while (true) {
@@ -264,8 +268,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             return;
           }
 
-          const candidates = localRouter.nextModels(RACE_WIDTH);
+          // Get all models not currently in TTL cooldown, then exclude those
+          // already tried for this specific request to prevent cycling.
+          const allAvailable = localRouter.nextModels(1000);
+          const candidates = allAvailable
+            .filter((id) => !triedThisRequest.has(id))
+            .slice(0, RACE_WIDTH);
           if (candidates.length === 0) break;
+
+          // Mark as tried before racing so aborts mid-batch don't cause retries.
+          candidates.forEach((id) => triedThisRequest.add(id));
 
           console.log(`[pi-freerouter] Racing: ${candidates.join(", ")}`);
 

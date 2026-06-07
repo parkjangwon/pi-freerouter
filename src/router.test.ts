@@ -82,4 +82,11 @@ describe("FreeRouter", () => {
     // markSlow won't replace a long-TTL entry with a short one.
     assert.equal(r.nextModel(), "b:free"); // a still excluded
   });
+
+  it("nextModels with large count returns all non-exhausted models", () => {
+    const r = new FreeRouter(["a:free", "b:free", "c:free"]);
+    r.markExhausted("b:free");
+    const all = r.nextModels(1000);
+    assert.deepEqual(all, ["a:free", "c:free"]);
+  });
 });
