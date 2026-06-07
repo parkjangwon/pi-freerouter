@@ -23,7 +23,6 @@ const FIRST_TOKEN_TIMEOUT_MS = 30_000;
 const REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
 const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MODEL_MAX_TOKENS = 4_096;
-const DEFERRED_API_KEY_PLACEHOLDER = "pi-freerouter-deferred-openrouter-key";
 
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const controller = new AbortController();
@@ -278,7 +277,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.registerProvider("freerouter", {
     baseUrl: "https://openrouter.ai/api/v1",
-    apiKey: DEFERRED_API_KEY_PLACEHOLDER,
+    apiKey: "$OPENROUTER_API_KEY",
     api: "openai-completions",
     models: [
       {

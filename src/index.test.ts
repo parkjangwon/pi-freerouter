@@ -71,7 +71,7 @@ describe("freerouter extension startup", () => {
     await freerouterExtension(fakePi.pi);
 
     assert.equal(fetchCalls, 0);
-    assert.equal(fakePi.providerConfig.apiKey, "pi-freerouter-deferred-openrouter-key");
+    assert.equal(fakePi.providerConfig.apiKey, "$OPENROUTER_API_KEY");
     assert.equal(fakePi.providerConfig.models[0].id, "free-router");
     assert.equal(typeof fakePi.providerConfig.streamSimple, "function");
     assert.equal(fakePi.sessionStartHandler, undefined);
@@ -91,7 +91,7 @@ describe("freerouter extension startup", () => {
     const model = registry.find("freerouter", "free-router");
     assert.equal(model?.id, "free-router");
     assert.ok(model);
-    assert.equal(registry.hasConfiguredAuth(model), true);
+    assert.equal(registry.hasConfiguredAuth(model), false);
   });
 
   it("returns a request-time error when OPENROUTER_API_KEY is missing", async () => {
