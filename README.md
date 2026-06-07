@@ -44,7 +44,13 @@ Whichever model emits its first token wins. The other two are immediately cancel
 
 ### Automatic fallback
 
-When a model hits its rate limit (HTTP 429) or fails (5xx), it's marked as exhausted and skipped for 90 seconds. The next batch of 3 models takes over. Timed-out models (no response in 30 seconds) recover faster — after 15 seconds.
+Failed models are skipped for a short cooldown period and then return to the pool:
+
+| Failure | Cooldown |
+|---|---|
+| Rate limit (429) or server error (5xx) | 90 s |
+| No first token within 30 s | 15 s |
+| Request rejected (400/422) | 90 s |
 
 ```
 Batch 1: [model A, model B, model C]  → all hit quota
@@ -52,9 +58,7 @@ Batch 2: [model D, model E, model F]  → model D wins
          ↑ model A–C recover after 90s and rejoin the pool
 ```
 
-Each model is tried **at most once per request** — even if its cooldown expires mid-conversation — so a slow pool never loops back to already-failed models.
-
-Once a winner starts streaming, a per-chunk idle timeout (30 s) guards against stalled connections: if no new data arrives, the connection is aborted and Pi receives a clean error instead of hanging indefinitely.
+Each model is tried at most once per request. Once a winner is streaming, a 30-second idle window per chunk ensures a stalled connection is aborted promptly rather than left open.
 
 ### Provider priority
 
