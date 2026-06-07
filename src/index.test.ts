@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import freerouterExtension from "./index.js";
 
 function makePi() {
@@ -64,10 +65,26 @@ describe("freerouter extension startup", () => {
     await freerouterExtension(fakePi.pi);
 
     assert.equal(fetchCalls, 0);
-    assert.equal(fakePi.providerConfig.apiKey, "");
+    assert.equal(fakePi.providerConfig.apiKey, "pi-freerouter-deferred-openrouter-key");
     assert.equal(fakePi.providerConfig.models[0].id, "free-router");
     assert.equal(typeof fakePi.providerConfig.streamSimple, "function");
     assert.equal(typeof fakePi.sessionStartHandler, "function");
+  });
+
+  it("passes Pi provider validation when OPENROUTER_API_KEY is missing", async () => {
+    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    const fakePi = {
+      registerProvider: registry.registerProvider.bind(registry),
+      on: () => {},
+      setModel: async () => {},
+    } as any;
+
+    await freerouterExtension(fakePi);
+
+    const model = registry.find("freerouter", "free-router");
+    assert.equal(model?.id, "free-router");
+    assert.ok(model);
+    assert.equal(registry.hasConfiguredAuth(model), true);
   });
 
   it("returns a request-time error when OPENROUTER_API_KEY is missing", async () => {
