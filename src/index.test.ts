@@ -71,7 +71,7 @@ describe("freerouter extension startup", () => {
     await freerouterExtension(fakePi.pi);
 
     assert.equal(fetchCalls, 0);
-    assert.equal(fakePi.providerConfig.apiKey, "$OPENROUTER_API_KEY");
+    assert.equal(fakePi.providerConfig.apiKey, "pi-freerouter-selectable-placeholder");
     assert.equal(fakePi.providerConfig.api, "freerouter");
     assert.equal(fakePi.providerConfig.models[0].id, "free-router");
     assert.equal(typeof fakePi.providerConfig.streamSimple, "function");
@@ -93,7 +93,7 @@ describe("freerouter extension startup", () => {
     assert.equal(model?.id, "free-router");
     assert.ok(model);
     assert.equal(model.api, "freerouter");
-    assert.equal(registry.hasConfiguredAuth(model), false);
+    assert.equal(registry.hasConfiguredAuth(model), true);
   });
 
   it("returns a request-time error when OPENROUTER_API_KEY is missing", async () => {
