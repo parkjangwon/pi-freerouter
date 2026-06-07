@@ -18,9 +18,12 @@ export OPENROUTER_API_KEY=sk-or-...
 
 Free key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
-**3. Start Pi**
+**3. Start Pi and select FreeRouter**
 
-FreeRouter appears in the model picker and is set as the default automatically.
+FreeRouter appears in the model picker as `auto [free-router]`. Select it when
+you want requests routed through OpenRouter's free model tier. If
+`OPENROUTER_API_KEY` is not set, Pi still starts normally; pi-freerouter shows
+the key error only after you send a prompt with `auto [free-router]` selected.
 
 ---
 
@@ -73,7 +76,8 @@ Free models are sorted so the lowest-latency inference providers are always trie
 
 ### Model list refresh
 
-The list of available free models is fetched at startup and refreshed every hour in the background, so long-running Pi sessions automatically pick up newly added models.
+The list of available free models is fetched when you first send a prompt with
+`auto [free-router]` selected, then refreshed every hour in the background.
 
 ---
 

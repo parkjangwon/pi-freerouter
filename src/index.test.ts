@@ -73,7 +73,8 @@ describe("freerouter extension startup", () => {
     assert.equal(fetchCalls, 0);
     assert.equal(fakePi.providerConfig.apiKey, "pi-freerouter-selectable-placeholder");
     assert.equal(fakePi.providerConfig.api, "freerouter");
-    assert.equal(fakePi.providerConfig.models[0].id, "free-router");
+    assert.equal(fakePi.providerConfig.models[0].id, "auto");
+    assert.equal(fakePi.providerConfig.models[0].name, "FreeRouter Auto");
     assert.equal(typeof fakePi.providerConfig.streamSimple, "function");
     assert.equal(fakePi.sessionStartHandler, undefined);
     assert.equal(fakePi.setModelCalls, 0);
@@ -89,8 +90,9 @@ describe("freerouter extension startup", () => {
 
     await freerouterExtension(fakePi);
 
-    const model = registry.find("freerouter", "free-router");
-    assert.equal(model?.id, "free-router");
+    const model = registry.find("free-router", "auto");
+    assert.equal(model?.id, "auto");
+    assert.equal(model?.provider, "free-router");
     assert.ok(model);
     assert.equal(model.api, "freerouter");
     assert.equal(registry.hasConfiguredAuth(model), true);

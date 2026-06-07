@@ -25,6 +25,8 @@ const REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
 const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MODEL_MAX_TOKENS = 4_096;
 const DEFERRED_API_KEY_PLACEHOLDER = "pi-freerouter-selectable-placeholder";
+const FREEROUTER_PROVIDER = "free-router";
+const FREEROUTER_MODEL = "auto";
 const FREEROUTER_API = "freerouter" as NonNullable<ProviderConfig["api"]>;
 
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
@@ -209,8 +211,8 @@ async function raceModels(
 const BASE_ERROR_OUTPUT = {
   role: "assistant" as const,
   api: "openrouter",
-  provider: "freerouter",
-  model: "free-router",
+  provider: FREEROUTER_PROVIDER,
+  model: FREEROUTER_MODEL,
   usage: {
     input: 0,
     output: 0,
@@ -278,14 +280,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     (refreshTimer as NodeJS.Timeout).unref();
   }
 
-  pi.registerProvider("freerouter", {
+  pi.registerProvider(FREEROUTER_PROVIDER, {
     baseUrl: "https://openrouter.ai/api/v1",
     apiKey: DEFERRED_API_KEY_PLACEHOLDER,
     api: FREEROUTER_API,
     models: [
       {
-        id: "free-router",
-        name: "FreeRouter",
+        id: FREEROUTER_MODEL,
+        name: "FreeRouter Auto",
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
