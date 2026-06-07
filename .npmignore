@@ -1,6 +1,3 @@
-node_modules/
-dist/
-
 # Local coding-agent and assistant workspaces
 .openchrome/
 .pi/
