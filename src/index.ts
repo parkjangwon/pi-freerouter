@@ -136,12 +136,50 @@ async function raceModels(
           return { winner: candidateIds[idx], exhaustedIds: [...exhaustedIds], timedOut: false };
         }
 
-        // text_start / toolcall_start: pipe remaining events from the winner to outStream.
-        for await (const e of { [Symbol.asyncIterator]: () => iterators[idx] }) {
-          outStream.push(e);
-          if (e.type === "done" || e.type === "error") {
+        // Pipe remaining events from the winner to outStream.
+        // Race each .next() against the same first-token timeout so a stalled
+        // winner (HTTP connection open but no new chunks) doesn't hang Pi forever.
+        let pipeDone = false;
+        while (!pipeDone) {
+          let idleHandle!: ReturnType<typeof setTimeout>;
+          const idlePromise = new Promise<{ idle: true }>((resolve) => {
+            idleHandle = setTimeout(() => resolve({ idle: true }), FIRST_TOKEN_TIMEOUT_MS);
+          });
+          const raceResult = await Promise.race([
+            iterators[idx].next().then((r) => ({ idle: false as const, r })),
+            idlePromise,
+          ]);
+          clearTimeout(idleHandle);
+
+          if (raceResult.idle) {
+            // Winner went silent after starting — abort and surface an error.
+            console.warn(
+              `[pi-freerouter] ${candidateIds[idx]} stalled after winning; closing stream.`,
+            );
+            controllers[idx].abort();
+            outStream.push({
+              type: "error",
+              reason: "error",
+              error: {
+                ...BASE_ERROR_OUTPUT,
+                content: [],
+                errorMessage: `${candidateIds[idx]} stream stalled`,
+                timestamp: Date.now(),
+              },
+            });
             outStream.end();
-            break;
+            pipeDone = true;
+          } else {
+            const { value: e, done: iterDone } = raceResult.r;
+            if (iterDone) {
+              pipeDone = true;
+            } else {
+              outStream.push(e);
+              if (e.type === "done" || e.type === "error") {
+                outStream.end();
+                pipeDone = true;
+              }
+            }
           }
         }
         outStream.end(); // defensive: no-op if already ended via done/error above
