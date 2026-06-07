@@ -52,6 +52,10 @@ Batch 2: [model D, model E, model F]  → model D wins
          ↑ model A–C recover after 90s and rejoin the pool
 ```
 
+Each model is tried **at most once per request** — even if its cooldown expires mid-conversation — so a slow pool never loops back to already-failed models.
+
+Once a winner starts streaming, a per-chunk idle timeout (30 s) guards against stalled connections: if no new data arrives, the connection is aborted and Pi receives a clean error instead of hanging indefinitely.
+
 ### Provider priority
 
 Free models are sorted so the lowest-latency inference providers are always tried first:
