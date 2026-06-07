@@ -7,6 +7,7 @@ import freerouterExtension from "./index.js";
 function makePi() {
   let providerConfig: any;
   let sessionStartHandler: any;
+  let setModelCalls = 0;
 
   return {
     pi: {
@@ -16,13 +17,18 @@ function makePi() {
       on: (_event: string, handler: any) => {
         sessionStartHandler = handler;
       },
-      setModel: async () => {},
+      setModel: async () => {
+        setModelCalls += 1;
+      },
     } as any,
     get providerConfig() {
       return providerConfig;
     },
     get sessionStartHandler() {
       return sessionStartHandler;
+    },
+    get setModelCalls() {
+      return setModelCalls;
     },
   };
 }
@@ -68,7 +74,8 @@ describe("freerouter extension startup", () => {
     assert.equal(fakePi.providerConfig.apiKey, "pi-freerouter-deferred-openrouter-key");
     assert.equal(fakePi.providerConfig.models[0].id, "free-router");
     assert.equal(typeof fakePi.providerConfig.streamSimple, "function");
-    assert.equal(typeof fakePi.sessionStartHandler, "function");
+    assert.equal(fakePi.sessionStartHandler, undefined);
+    assert.equal(fakePi.setModelCalls, 0);
   });
 
   it("passes Pi provider validation when OPENROUTER_API_KEY is missing", async () => {

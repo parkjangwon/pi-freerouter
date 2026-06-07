@@ -1,6 +1,5 @@
 import type {
   ExtensionAPI,
-  ExtensionContext,
   AssistantMessageEvent,
   AssistantMessageEventStream,
   Context,
@@ -459,16 +458,4 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }) as NonNullable<import("@earendil-works/pi-coding-agent").ProviderConfig["streamSimple"]>,
   });
 
-  // Auto-activate FreeRouter as the default model on session start.
-  pi.on("session_start", async (_event: unknown, handlerCtx?: unknown) => {
-    try {
-      const registry = (handlerCtx as ExtensionContext)?.modelRegistry;
-      const freeRouterModel = registry?.find?.("freerouter", "free-router");
-      if (freeRouterModel) {
-        await pi.setModel(freeRouterModel);
-      }
-    } catch (err) {
-      console.warn("[pi-freerouter] Failed to set FreeRouter as active model:", err);
-    }
-  });
 }
