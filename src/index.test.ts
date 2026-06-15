@@ -6,7 +6,7 @@ import freerouterExtension from "./index.js";
 
 function makePi() {
   let providerConfig: any;
-  let sessionStartHandler: any;
+  const handlers = new Map<string, any>();
   let setModelCalls = 0;
 
   return {
@@ -14,8 +14,8 @@ function makePi() {
       registerProvider: (_name: string, config: any) => {
         providerConfig = config;
       },
-      on: (_event: string, handler: any) => {
-        sessionStartHandler = handler;
+      on: (event: string, handler: any) => {
+        handlers.set(event, handler);
       },
       setModel: async () => {
         setModelCalls += 1;
@@ -25,7 +25,10 @@ function makePi() {
       return providerConfig;
     },
     get sessionStartHandler() {
-      return sessionStartHandler;
+      return handlers.get("session_start");
+    },
+    get sessionShutdownHandler() {
+      return handlers.get("session_shutdown");
     },
     get setModelCalls() {
       return setModelCalls;
@@ -111,5 +114,13 @@ describe("freerouter extension startup", () => {
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "error");
     assert.match(events[0].error.errorMessage, /OPENROUTER_API_KEY/);
+  });
+
+  it("registers session_shutdown hook to clear the refresh timer", async () => {
+    const fakePi = makePi();
+    await freerouterExtension(fakePi.pi);
+
+    assert.ok(fakePi.sessionShutdownHandler, "sessionShutdownHandler was not registered");
+    await fakePi.sessionShutdownHandler({ type: "session_shutdown", reason: "quit" });
   });
 });

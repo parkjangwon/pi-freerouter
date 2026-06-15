@@ -29,14 +29,32 @@ const FREEROUTER_PROVIDER = "free-router";
 const FREEROUTER_MODEL = "auto";
 const FREEROUTER_API = "freerouter" as NonNullable<ProviderConfig["api"]>;
 
-function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
-  const controller = new AbortController();
-  for (const sig of signals) {
-    if (!sig) continue;
-    if (sig.aborted) { controller.abort(); return controller.signal; }
-    sig.addEventListener("abort", () => controller.abort(), { once: true });
+function mergeSignals(
+  parent: AbortSignal | undefined,
+  local: AbortSignal,
+): { signal: AbortSignal; cleanup: () => void } {
+  if (!parent) {
+    return { signal: local, cleanup: () => {} };
   }
-  return controller.signal;
+  if (parent.aborted) {
+    return { signal: parent, cleanup: () => {} };
+  }
+  if (local.aborted) {
+    return { signal: local, cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+
+  parent.addEventListener("abort", onAbort);
+  local.addEventListener("abort", onAbort);
+
+  const cleanup = () => {
+    parent.removeEventListener("abort", onAbort);
+    local.removeEventListener("abort", onAbort);
+  };
+
+  return { signal: controller.signal, cleanup };
 }
 
 type RaceResult = {
@@ -69,12 +87,18 @@ async function raceModels(
   const proxyStreams = candidateIds.map(() => createAssistantMessageEventStream());
   const exhaustedIds: string[] = [];
   let fatalError: Error | undefined;
+  const cleanups: (() => void)[] = [];
 
   // Start all candidates concurrently; each writes to its own isolated proxy stream.
   candidateIds.forEach((modelId, i) => {
-    const sig = parentSignal
-      ? mergeSignals(parentSignal, controllers[i].signal)
-      : controllers[i].signal;
+    let sig: AbortSignal;
+    if (parentSignal) {
+      const merged = mergeSignals(parentSignal, controllers[i].signal);
+      sig = merged.signal;
+      cleanups.push(merged.cleanup);
+    } else {
+      sig = controllers[i].signal;
+    }
     streamFreeModel(modelId, context, apiKey, proxyStreams[i], sig, maxTokens).catch((err: unknown) => {
       if (err instanceof ModelExhaustedError) {
         exhaustedIds.push(modelId);
@@ -205,6 +229,7 @@ async function raceModels(
     return { winner: null, exhaustedIds: [...exhaustedIds], timedOut: false, fatalError };
   } finally {
     clearTimeout(timeoutHandle);
+    cleanups.forEach((cb) => cb());
   }
 }
 
@@ -279,6 +304,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   if (typeof (refreshTimer as NodeJS.Timeout).unref === "function") {
     (refreshTimer as NodeJS.Timeout).unref();
   }
+
+  pi.on("session_shutdown", () => {
+    clearInterval(refreshTimer);
+  });
 
   pi.registerProvider(FREEROUTER_PROVIDER, {
     baseUrl: "https://openrouter.ai/api/v1",
@@ -461,5 +490,4 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       return stream as unknown as ReturnType<NonNullable<import("@earendil-works/pi-coding-agent").ProviderConfig["streamSimple"]>>;
     }) as NonNullable<import("@earendil-works/pi-coding-agent").ProviderConfig["streamSimple"]>,
   });
-
 }
