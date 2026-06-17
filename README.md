@@ -86,6 +86,18 @@ The list of available free models is fetched when you first send a prompt with
 - [Pi coding agent](https://pi.dev) v0.78+
 - OpenRouter API key (free tier is sufficient)
 
+## Security notes
+
+- `auto [free-router]` sends your prompt, conversation context, and enabled
+  tool definitions to OpenRouter and the selected free model provider. Do not
+  use it for secrets, credentials, private source code, or regulated data unless
+  that external processing is acceptable for your use case.
+- Keep `OPENROUTER_API_KEY` in your shell, password manager, or local secret
+  store. Do not commit it to this repository or paste it into prompts.
+- For untrusted prompts or repositories, start Pi with `--no-tools` or a narrow
+  `--tools` allowlist so model-generated tool calls cannot access more than you
+  intended.
+
 ## License
 
 MIT

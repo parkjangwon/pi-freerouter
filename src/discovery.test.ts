@@ -65,6 +65,23 @@ describe("fetchFreeModels", () => {
     );
   });
 
+  it("aborts model discovery when OpenRouter does not respond", async () => {
+    globalThis.fetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+
+    const { fetchFreeModels } = await import("./discovery.js");
+    await assert.rejects(
+      () => fetchFreeModels("sk-or-test", 0),
+      (err: unknown) => err instanceof Error && err.name === "AbortError",
+    );
+  });
+
   it("sorts fast providers before unknown providers", async () => {
     const mockPayload = {
       data: [
@@ -85,5 +102,24 @@ describe("fetchFreeModels", () => {
     assert.ok(models[0].id.startsWith("groq/"), `expected groq first, got ${models[0].id}`);
     assert.ok(models[1].id.startsWith("cerebras/"), `expected cerebras second, got ${models[1].id}`);
     assert.ok(models[2].id.startsWith("meta-llama/"), `expected meta-llama last, got ${models[2].id}`);
+  });
+
+  it("filters moderation and guard models that do not answer general prompts", async () => {
+    const mockPayload = {
+      data: [
+        { id: "nvidia/nemotron-3.5-content-safety:free", name: "Nemotron Content Safety", context_length: 131072 },
+        { id: "meta-llama/llama-guard-4-12b:free", name: "Llama Guard", context_length: 131072 },
+        { id: "nvidia/nemotron-nano-12b-v2-vl:free", name: "Nemotron VL", context_length: 131072 },
+        { id: "groq/llama-3.3-70b:free", name: "Groq Llama", context_length: 131072 },
+      ],
+    };
+
+    globalThis.fetch = async () =>
+      ({ ok: true, json: async () => mockPayload } as any);
+
+    const { fetchFreeModels } = await import("./discovery.js");
+    const models = await fetchFreeModels("sk-or-test");
+
+    assert.deepEqual(models.map((m) => m.id), ["groq/llama-3.3-70b:free"]);
   });
 });

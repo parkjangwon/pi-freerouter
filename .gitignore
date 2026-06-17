@@ -2,14 +2,31 @@ node_modules/
 dist/
 
 # Local coding-agent and assistant workspaces
+.antigravity/
+.antigravitycli/
+.augment/
 .openchrome/
 .pi/
+.phi/
+.phidata/
 .claude/
+.claude-flow/
+.codegraph/
 .codex/
 .gemini/
 .cursor/
 .continue/
 .aider/
+.amp/
+.bloop/
+.cline/
+.cody/
+.codeium/
+.devin/
+.goose/
+.kilocode/
+.opencode/
+.openhands/
 .windsurf/
 .roo/
 .crush/
