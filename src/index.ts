@@ -331,6 +331,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let router: FreeRouter | undefined;
 	let modelFetchPromise: Promise<FreeRouter> | undefined;
 	let maxTokens = DEFAULT_MODEL_MAX_TOKENS;
+	let isRefreshing = false;
 
 	function currentApiKey(): string | undefined {
 		const apiKey = process.env.OPENROUTER_API_KEY;
@@ -360,6 +361,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	// Hourly background refresh — picks up new free models without restarting Pi.
 	async function refreshModels(): Promise<void> {
+		if (isRefreshing) return;
+		isRefreshing = true;
 		const apiKey = currentApiKey();
 		if (!apiKey) return;
 
@@ -374,8 +377,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 		} catch (err) {
 			console.warn("[pi-freerouter] Failed to refresh free model list:", err);
+		} finally {
+			isRefreshing = false;
 		}
-	}
+}
 
 	const refreshTimer = setInterval(() => {
 		void refreshModels();
